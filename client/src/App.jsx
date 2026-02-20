@@ -353,13 +353,29 @@ export default function App() {
   const handleJoin = () => {
     if (!roomId) { alert("Enter a room id first"); return; }
     setIsLoading(true);
-    if (!socket.connected) { socket.connect(); }
-    socket.emit("join-room", roomId);
-    setJoined(true);
-    setTimeout(() => { 
-      resizeCanvas(); 
-      setIsLoading(false);
-    }, 500);
+    
+    // If socket is not connected, wait for connection before joining
+    if (!socket.connected) {
+      const connectHandler = () => {
+        socket.emit("join-room", roomId);
+        setJoined(true);
+        socket.off("connect", connectHandler);
+        setTimeout(() => { 
+          resizeCanvas(); 
+          setIsLoading(false);
+        }, 500);
+      };
+      
+      socket.on("connect", connectHandler);
+      socket.connect();
+    } else {
+      socket.emit("join-room", roomId);
+      setJoined(true);
+      setTimeout(() => { 
+        resizeCanvas(); 
+        setIsLoading(false);
+      }, 500);
+    }
   };
 
   const clearBoard = () => {
