@@ -2,13 +2,35 @@ import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
 
-const SOCKET_URL = "http://localhost:5000";
-const socket = io(SOCKET_URL, { 
-  autoConnect: true,
-  reconnection: true,
-  reconnectionAttempts: 5,
-  reconnectionDelay: 1000,
-});
+const SOCKET_URL =
+  window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://realtime-collaborative-whiteboard-y7ak.onrender.com";
+
+// Create socket instance without auto-connecting
+// We'll connect only when user joins a room
+let socket = null;
+
+const getSocket = () => {
+  if (!socket) {
+    socket = io(SOCKET_URL, { 
+      autoConnect: false, // Don't auto-connect on creation
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 10000, // Add connection timeout
+    });
+    
+    // Set up error handlers
+    socket.on("connect_error", (err) => {
+      console.error("Connection error:", err.message);
+    });
+    socket.on("error", (err) => {
+      console.error("Socket error:", err);
+    });
+  }
+  return socket;
+};
 
 const PRESET_COLORS = [
   "#1e293b", "#ef4444", "#f97316", "#eab308", "#22c55e",
@@ -40,17 +62,13 @@ const KEYBOARD_SHORTCUTS = {
 // Custom cursor SVG for brush tool - simple pen icon
 const BRUSH_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24'%3E%3Cpath d='M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z' fill='%23000'/%3E%3C/svg%3E") 2 20, pointer`;
 
-socket.on("connect_error", (err) => console.error("Connection error:", err.message));
-socket.on("disconnect", (reason) => console.warn("Disconnected:", reason));
-socket.on("reconnect", (attemptNumber) => console.log("Reconnected after", attemptNumber, "attempts"));
-
 export default function App() {
   const [roomId, setRoomId] = useState("");
   const [joined, setJoined] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [color, setColor] = useState("#1e293b");
   const [size, setSize] = useState(4);
-  const [connectionStatus, setConnectionStatus] = useState("connecting");
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [showCustomColor, setShowCustomColor] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tool, setTool] = useState(TOOLS.BRUSH);
@@ -77,16 +95,51 @@ export default function App() {
   const startPosRef = useRef({ x: 0, y: 0 });
   const tempCanvasRef = useRef(null);
 
+  // Set up socket connection handlers when component mounts
   useEffect(() => {
+    const currentSocket = getSocket();
+    
     const updateStatus = () => {
-      setConnectionStatus(socket.connected ? "connected" : "disconnected");
+      setConnectionStatus(currentSocket.connected ? "connected" : "disconnected");
     };
+    
+    const handleConnectError = (err) => {
+      console.error("Connection error:", err.message);
+      setConnectionStatus("disconnected");
+    };
+    
+    const handleDisconnect = (reason) => {
+      console.warn("Disconnected:", reason);
+      setConnectionStatus("disconnected");
+    };
+    
+    const handleReconnect = (attemptNumber) => {
+      console.log("Reconnected after", attemptNumber, "attempts");
+      setConnectionStatus("connected");
+    };
+    
+    const handleReconnectFailed = () => {
+      console.error("Failed to reconnect");
+      setConnectionStatus("disconnected");
+    };
+    
+    // Initial status check
     updateStatus();
-    socket.on("connect", updateStatus);
-    socket.on("disconnect", updateStatus);
+    
+    currentSocket.on("connect", updateStatus);
+    currentSocket.on("disconnect", updateStatus);
+    currentSocket.on("connect_error", handleConnectError);
+    currentSocket.on("disconnect", handleDisconnect);
+    currentSocket.on("reconnect", handleReconnect);
+    currentSocket.on("reconnect_failed", handleReconnectFailed);
+    
     return () => {
-      socket.off("connect", updateStatus);
-      socket.off("disconnect", updateStatus);
+      currentSocket.off("connect", updateStatus);
+      currentSocket.off("disconnect", updateStatus);
+      currentSocket.off("connect_error", handleConnectError);
+      currentSocket.off("disconnect", handleDisconnect);
+      currentSocket.off("reconnect", handleReconnect);
+      currentSocket.off("reconnect_failed", handleReconnectFailed);
     };
   }, []);
 
@@ -193,6 +246,7 @@ export default function App() {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current || canvas.getContext("2d");
     ctxRef.current = ctx;
+    const currentSocket = getSocket();
 
     const handlePointerDown = (e) => {
       if (e.button && e.button !== 0) return;
@@ -227,7 +281,7 @@ export default function App() {
         tempCtx.drawImage(canvas, 0, 0);
       }
       
-      socket.emit("start-draw", { roomId, x, y, color: tool === TOOLS.ERASER ? "#ffffff" : color, size: tool === TOOLS.ERASER ? size * 3 : size, tool });
+      currentSocket.emit("start-draw", { roomId, x, y, color: tool === TOOLS.ERASER ? "#ffffff" : color, size: tool === TOOLS.ERASER ? size * 3 : size, tool });
     };
 
     const handlePointerMove = (e) => {
@@ -270,7 +324,7 @@ export default function App() {
         ctx.stroke();
       }
       
-      socket.emit("drawing", { roomId, x, y, color, size, tool });
+      currentSocket.emit("drawing", { roomId, x, y, color, size, tool });
     };
 
     const stopDrawing = (e) => {
@@ -280,7 +334,7 @@ export default function App() {
       
       try { canvas.releasePointerCapture?.(e.pointerId); } catch (err) {}
       
-      socket.emit("end-draw", { roomId, tool });
+      currentSocket.emit("end-draw", { roomId, tool });
       saveCanvas();
     };
 
@@ -332,10 +386,10 @@ export default function App() {
       ctx.fillText(data.text, data.x, data.y);
     };
 
-    socket.on("start-draw", handleRemoteStart);
-    socket.on("drawing", handleRemoteDrawing);
-    socket.on("end-draw", handleRemoteEnd);
-    socket.on("draw-text", handleRemoteText);
+    currentSocket.on("start-draw", handleRemoteStart);
+    currentSocket.on("drawing", handleRemoteDrawing);
+    currentSocket.on("end-draw", handleRemoteEnd);
+    currentSocket.on("draw-text", handleRemoteText);
 
     return () => {
       canvas.removeEventListener("pointerdown", handlePointerDown);
@@ -343,10 +397,10 @@ export default function App() {
       window.removeEventListener("pointerup", stopDrawing);
       canvas.removeEventListener("pointercancel", stopDrawing);
       canvas.removeEventListener("pointerleave", stopDrawing);
-      socket.off("start-draw", handleRemoteStart);
-      socket.off("drawing", handleRemoteDrawing);
-      socket.off("end-draw", handleRemoteEnd);
-      socket.off("draw-text", handleRemoteText);
+      currentSocket.off("start-draw", handleRemoteStart);
+      currentSocket.off("drawing", handleRemoteDrawing);
+      currentSocket.off("end-draw", handleRemoteEnd);
+      currentSocket.off("draw-text", handleRemoteText);
     };
   }, [joined, roomId, color, size, tool]);
 
@@ -354,22 +408,24 @@ export default function App() {
     if (!roomId) { alert("Enter a room id first"); return; }
     setIsLoading(true);
     
+    const currentSocket = getSocket();
+    
     // If socket is not connected, wait for connection before joining
-    if (!socket.connected) {
+    if (!currentSocket.connected) {
       const connectHandler = () => {
-        socket.emit("join-room", roomId);
+        currentSocket.emit("join-room", roomId);
         setJoined(true);
-        socket.off("connect", connectHandler);
+        currentSocket.off("connect", connectHandler);
         setTimeout(() => { 
           resizeCanvas(); 
           setIsLoading(false);
         }, 500);
       };
       
-      socket.on("connect", connectHandler);
-      socket.connect();
+      currentSocket.on("connect", connectHandler);
+      currentSocket.connect();
     } else {
-      socket.emit("join-room", roomId);
+      currentSocket.emit("join-room", roomId);
       setJoined(true);
       setTimeout(() => { 
         resizeCanvas(); 
@@ -387,7 +443,8 @@ export default function App() {
     setShowTextMarker(false);
     setIsPlacingText(false);
     setTextInput("");
-    socket.emit("clear", roomId);
+    const currentSocket = getSocket();
+    currentSocket.emit("clear", roomId);
     saveCanvas();
   };
 
@@ -400,6 +457,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    const currentSocket = getSocket();
     const onClear = (room) => {
       if (room !== roomId) return;
       const ctx = ctxRef.current;
@@ -407,8 +465,8 @@ export default function App() {
       if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       saveCanvas();
     };
-    socket.on("clear", onClear);
-    return () => socket.off("clear", onClear);
+    currentSocket.on("clear", onClear);
+    return () => currentSocket.off("clear", onClear);
   }, [roomId]);
 
   // Keyboard shortcuts
@@ -610,7 +668,8 @@ export default function App() {
                             ctx.fillStyle = color;
                             ctx.fillText(textInput, textPosition.x * dpr, textPosition.y * dpr);
                             saveCanvas();
-                            socket.emit("draw-text", { roomId, text: textInput, x: textPosition.x * dpr, y: textPosition.y * dpr, color, fontSize: size * 4 });
+                            const currentSocket = getSocket();
+                            currentSocket.emit("draw-text", { roomId, text: textInput, x: textPosition.x * dpr, y: textPosition.y * dpr, color, fontSize: size * 4 });
                             setTextInput("");
                             setIsPlacingText(false);
                           }
@@ -656,4 +715,3 @@ export default function App() {
     </div>
   );
 }
-
