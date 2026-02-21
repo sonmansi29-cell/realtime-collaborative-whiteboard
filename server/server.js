@@ -6,6 +6,11 @@ const cors = require("cors");
 const app = express();
 app.use(cors());
 
+// Test route to verify backend is running
+app.get("/", (req, res) => {
+  res.send("Whiteboard Backend is Running 🚀");
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
