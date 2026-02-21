@@ -11,7 +11,8 @@ const io = new Server(server, {
   cors: {
     origin: [
       "http://localhost:5173",
-      "https://realtime-collaborative-whiteboard.vercel.app"
+      "https://realtime-collaborative-whiteboard.vercel.app",
+      "https://realtime-collaborative-whiteboard-y7ak.onrender.com"
     ],
     methods: ["GET", "POST"],
   },
